@@ -1,52 +1,54 @@
-#define MYSQLPP_MYSQL_HEADERS_BURIED
-#include <mysql++/mysql++.h>
 #include <iostream>
 #include <map>
 #include <stdexcept>
 #include <vector>
 
-using Composite = std::vector<std::string>;
+#define MYSQLPP_MYSQL_HEADERS_BURIED
+#include <mysql++/mysql++.h>
+using mysqlpp::Connection, mysqlpp::Query, mysqlpp::Row, mysqlpp::UseQueryResult;
 
-template<class VALUES>
-using outputter_t = void(mysqlpp::Query& stream, const VALUES&, const std::vector<std::string>& field_names, int index);
+using PrimaryKey = std::vector<std::string>;
 
-template<class VALUES>
-void output_field(mysqlpp::Query& stream, const VALUES&, const std::vector<std::string>& field_names, int index) {
-	stream << "`" << field_names[index] << "`";
+using outputter_t = void(Query& query, const Row&, const std::vector<std::string>& field_names, int index);
+
+void output_field(Query& query, const Row&, const std::vector<std::string>& field_names, int index) {
+	query << "`" << field_names[index] << "`";
 }
 
-template<class VALUES>
-void output_value(mysqlpp::Query& stream, const VALUES& values, const std::vector<std::string>&, int index) {
-	stream << mysqlpp::quote << values[index];
+void output_value(Query& query, const Row& row, const std::vector<std::string>&, int index) {
+	query << mysqlpp::quote << row[index];
 }
 
-template<class VALUES>
-void output_equal(mysqlpp::Query& stream, const VALUES& values, const std::vector<std::string>& field_names, int index) {
-	output_field(stream, values, field_names, index);
-	stream << '=';
-	output_value(stream, values, field_names, index);
+void output_equal(Query& query, const Row& row, const std::vector<std::string>& field_names, int index) {
+	output_field(query, row, field_names, index);
+	query << '=';
+	output_value(query, row, field_names, index);
 }
 
 struct TableData {
 	const std::string full_table_name;
-	std::map<Composite, mysqlpp::Row> rows;
+	std::map<PrimaryKey, Row> rows;
 
 	explicit TableData(std::string full_table_name) : full_table_name(std::move(full_table_name)) { }
 };
 
 class TableMetadata {
+public:
+	const int field_count;
+
+private:
 	std::vector<std::string> field_names;
 	std::list<int> all_indexes;
 	std::list<int> primary_key_indexes;
 
-	template<class VALUES>
-	bool output_list(mysqlpp::Query& stream, const VALUES& values, outputter_t<VALUES> outputter, const char* delimiter, const std::list<int>* indexes) const {
+	template<class LIST>
+	bool output_list(Query& query, const Row& row, outputter_t outputter, const char* delimiter, const LIST& indexes) const {
 		bool writing_started = false;
-		for (int index : *indexes) {
+		for (int index : indexes) {
 			if (writing_started) {
-				stream << delimiter;
+				query << delimiter;
 			}
-			outputter(stream, values, field_names, index);
+			outputter(query, row, field_names, index);
 			writing_started = true;
 		}
 		return writing_started;
@@ -54,8 +56,11 @@ class TableMetadata {
 
 public:
 	TableMetadata(std::vector<std::string> field_names, std::list<int> primary_key_indexes)
-	: field_names(std::move(field_names)), primary_key_indexes(std::move(primary_key_indexes)) {
-		for (int i=0; i<this->field_names.size(); ++i) {
+	: field_count(static_cast<int>(field_names.size())), field_names(std::move(field_names)), primary_key_indexes(std::move(primary_key_indexes)) {
+		if (this->field_names.size() > std::numeric_limits<int>::max()) {
+			throw std::runtime_error("strangely too many columns in database");
+		}
+		for (int i=0; i<field_count; ++i) {
 			all_indexes.push_back(i);
 		}
 	}
@@ -64,28 +69,25 @@ public:
 		return field_names != that.field_names || primary_key_indexes != that.primary_key_indexes;
 	}
 
-	template<class VALUES>
-	bool output_equal_list_for_where(mysqlpp::Query& stream, const VALUES& values) const {
-		return output_list(stream, values, output_equal<VALUES>, " AND ", &primary_key_indexes);
+	template<class LIST>
+	bool output_equal_list_for_update(Query& query, const Row& row, const LIST& indexes) const {
+		return output_list(query, row, output_equal, ",", indexes);
 	}
 
-	template<class VALUES>
-	bool output_equal_list_for_update(mysqlpp::Query& stream, const VALUES& values, const std::list<int>* indexes) const {
-		return output_list(stream, values, output_equal<VALUES>, ",", indexes);
+	bool output_equal_list_for_where(Query& query, const Row& row) const {
+		return output_list(query, row, output_equal, " AND ", primary_key_indexes);
 	}
 
-	template<class VALUES>
-	bool output_field_list_for_insert(mysqlpp::Query& stream, const VALUES& values) const {
-		return output_list(stream, values, output_field<VALUES>, ",", &all_indexes);
+	bool output_field_list_for_insert(Query& query, const Row& row) const {
+		return output_list(query, row, output_field, ",", all_indexes);
 	}
 
-	template<class VALUES>
-	bool output_value_list_for_insert(mysqlpp::Query& stream, const VALUES& values) const {
-		return output_list(stream, values, output_value<VALUES>, ",", &all_indexes);
+	bool output_value_list_for_insert(Query& query, const Row& row) const {
+		return output_list(query, row, output_value, ",", all_indexes);
 	}
 
-	[[nodiscard]] Composite extract_keys(const mysqlpp::Row& row) const {
-		Composite keys;
+	[[nodiscard]] PrimaryKey extract_keys(const Row& row) const {
+		PrimaryKey keys;
 		for (int index : primary_key_indexes) {
 			keys.emplace_back(row[index]);
 		}
@@ -93,13 +95,13 @@ public:
 	}
 };
 
-TableMetadata extract_table_metadata(mysqlpp::Connection& conn, const std::string& full_table_name) {
+TableMetadata extract_table_metadata(Connection& conn, const std::string& full_table_name) {
 	std::vector<std::string> field_names;
 	std::list<int> primary_key_indexes;
-	if (mysqlpp::Query query = conn.query("DESCRIBE " + full_table_name)) {
-		if (mysqlpp::UseQueryResult res = query.use()) {
+	if (Query query = conn.query("DESCRIBE " + full_table_name)) {
+		if (UseQueryResult res = query.use()) {
 			int index = 0;
-			while (mysqlpp::Row row = res.fetch_row()) {
+			while (Row row = res.fetch_row()) {
 				field_names.emplace_back(row["Field"]);
 				if (row["Key"] == "PRI") {
 					primary_key_indexes.push_back(index);
@@ -111,12 +113,12 @@ TableMetadata extract_table_metadata(mysqlpp::Connection& conn, const std::strin
 	return {std::move(field_names), std::move(primary_key_indexes)};
 }
 
-TableData fetch_table_data(mysqlpp::Connection& conn, const TableMetadata& metadata, const std::string& full_table_name) {
+TableData fetch_table_data(Connection& conn, const TableMetadata& metadata, const std::string& full_table_name) {
 	TableData table_data(full_table_name);
-	if (mysqlpp::Query query = conn.query("SELECT * FROM " + full_table_name)) {
-		if (mysqlpp::UseQueryResult res = query.use()) {
-			while (mysqlpp::Row row = res.fetch_row()) {
-				Composite keys = metadata.extract_keys(row);
+	if (Query query = conn.query("SELECT * FROM " + full_table_name)) {
+		if (UseQueryResult res = query.use()) {
+			while (Row row = res.fetch_row()) {
+				PrimaryKey keys = metadata.extract_keys(row);
 				table_data.rows.emplace(std::move(keys), std::move(row));
 			}
 		}
@@ -124,17 +126,17 @@ TableData fetch_table_data(mysqlpp::Connection& conn, const TableMetadata& metad
 	return table_data;
 }
 
-void compute_table_diff(mysqlpp::Connection& conn, const TableMetadata& metadata, const std::string& full_table_name, TableData& table_data) {
-	if (mysqlpp::Query query = conn.query("SELECT * FROM " + full_table_name)) {
-		if (mysqlpp::UseQueryResult res = query.use()) {
-			std::list<int> changed_indexes;
-			while (mysqlpp::Row row = res.fetch_row()) {
-				Composite keys = metadata.extract_keys(row);
+void compute_table_diff(Connection& conn, const TableMetadata& metadata, const std::string& full_table_name, TableData& table_data) {
+	if (Query query = conn.query("SELECT * FROM " + full_table_name)) {
+		if (UseQueryResult res = query.use()) {
+			std::vector<int> changed_indexes;
+			while (Row row = res.fetch_row()) {
+				PrimaryKey keys = metadata.extract_keys(row);
 
 				auto it = table_data.rows.find(keys);
 				if (it == table_data.rows.end()) {
 					// if the row is not present in table_data, it should be INSERTed
-					mysqlpp::Query insert_query = conn.query();
+					Query insert_query = conn.query();
 					insert_query << "INSERT INTO " + table_data.full_table_name + " (";
 					metadata.output_field_list_for_insert(insert_query, row);
 					insert_query << ") VALUES (";
@@ -145,16 +147,15 @@ void compute_table_diff(mysqlpp::Connection& conn, const TableMetadata& metadata
 				} else {
 					// it is present, but it may have changed
 					changed_indexes.clear();
-					const int row_size = row.size();
-					for (int index=0; index<row_size; ++index) {
+					for (int index=0; index<metadata.field_count; ++index) {
 						if (row[index] != it->second[index]) {
 							changed_indexes.push_back(index);
 						}
 					}
 					if (!changed_indexes.empty()) {
-						mysqlpp::Query update_query = conn.query();
+						Query update_query = conn.query();
 						update_query << "UPDATE " + table_data.full_table_name + " SET ";
-						metadata.output_equal_list_for_update(update_query, row, &changed_indexes);
+						metadata.output_equal_list_for_update(update_query, row, changed_indexes);
 						update_query << " WHERE ";
 						metadata.output_equal_list_for_where(update_query, row);
 
@@ -168,14 +169,13 @@ void compute_table_diff(mysqlpp::Connection& conn, const TableMetadata& metadata
 
 	// afterwards, all rows that are left in table_data are the ones that should be DELETEd
 	for (const auto& old : table_data.rows) {
-		mysqlpp::Query delete_query = conn.query();
+		Query delete_query = conn.query();
 		delete_query << "DELETE FROM " + table_data.full_table_name + " WHERE ";
 		metadata.output_equal_list_for_where(delete_query, old.second);
 
 		std::cout << delete_query << ";\n";
 	}
 }
-
 
 int main() {
 	const char* server1 = "localhost";
@@ -189,8 +189,8 @@ int main() {
 	const std::string table_name_2 = "airport_directory.common_airport";
 
 	try {
-		mysqlpp::Connection conn1(nullptr, server1, user1, password1);
-		mysqlpp::Connection conn2(nullptr, server2, user2, password2);
+		Connection conn1(nullptr, server1, user1, password1);
+		Connection conn2(nullptr, server2, user2, password2);
 
 		TableMetadata metadata = extract_table_metadata(conn1, table_name_1);
 		if (extract_table_metadata(conn2, table_name_2) != metadata) {
