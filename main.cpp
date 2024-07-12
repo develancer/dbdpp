@@ -9,21 +9,8 @@ using mysqlpp::Connection, mysqlpp::Query, mysqlpp::Row, mysqlpp::UseQueryResult
 
 using PrimaryKey = std::vector<std::string>;
 
-using outputter_t = void(Query& query, const Row&, const std::vector<std::string>& field_names, int index);
+// using outputter_t = void(Query& query, const Row&, const std::vector<std::string>& field_names, int index);
 
-void output_field(Query& query, const Row&, const std::vector<std::string>& field_names, int index) {
-	query << "`" << field_names[index] << "`";
-}
-
-void output_value(Query& query, const Row& row, const std::vector<std::string>&, int index) {
-	query << mysqlpp::quote << row[index];
-}
-
-void output_equal(Query& query, const Row& row, const std::vector<std::string>& field_names, int index) {
-	output_field(query, row, field_names, index);
-	query << '=';
-	output_value(query, row, field_names, index);
-}
 
 struct TableData {
 	const std::string full_table_name;
@@ -41,6 +28,22 @@ private:
 	std::list<int> all_indexes;
 	std::list<int> primary_key_indexes;
 
+	typedef void (TableMetadata::*outputter_t)(Query& query, const Row&, int index) const;
+
+	void output_field(Query& query, const Row&, int index) const {
+		query << "`" << field_names[index] << "`";
+	}
+
+	void output_value(Query& query, const Row& row, int index) const {
+		query << mysqlpp::quote << row[index];
+	}
+
+	void output_equal(Query& query, const Row& row, int index) const {
+		output_field(query, row, index);
+		query << '=';
+		output_value(query, row, index);
+	}
+
 	template<class LIST>
 	bool output_list(Query& query, const Row& row, outputter_t outputter, const char* delimiter, const LIST& indexes) const {
 		bool writing_started = false;
@@ -48,7 +51,7 @@ private:
 			if (writing_started) {
 				query << delimiter;
 			}
-			outputter(query, row, field_names, index);
+			(this->*outputter)(query, row, index);
 			writing_started = true;
 		}
 		return writing_started;
@@ -71,19 +74,19 @@ public:
 
 	template<class LIST>
 	bool output_equal_list_for_update(Query& query, const Row& row, const LIST& indexes) const {
-		return output_list(query, row, output_equal, ",", indexes);
+		return output_list(query, row, &TableMetadata::output_equal, ",", indexes);
 	}
 
 	bool output_equal_list_for_where(Query& query, const Row& row) const {
-		return output_list(query, row, output_equal, " AND ", primary_key_indexes);
+		return output_list(query, row, &TableMetadata::output_equal, " AND ", primary_key_indexes);
 	}
 
 	bool output_field_list_for_insert(Query& query, const Row& row) const {
-		return output_list(query, row, output_field, ",", all_indexes);
+		return output_list(query, row, &TableMetadata::output_field, ",", all_indexes);
 	}
 
 	bool output_value_list_for_insert(Query& query, const Row& row) const {
-		return output_list(query, row, output_value, ",", all_indexes);
+		return output_list(query, row, &TableMetadata::output_value, ",", all_indexes);
 	}
 
 	[[nodiscard]] PrimaryKey extract_keys(const Row& row) const {
