@@ -46,17 +46,16 @@ _db_to_change.target_table_ to make it consistent with _db_reference.ref_table_.
 ### Requirements
 
 To compile dbdpp, CMake build system is recommended. If not available,
-you can still compile it manually—after all, it’s just a single C++ source file dbdpp.cpp.
+you can still compile it manually—after all, it’s just a single C++ source file **dbdpp.cpp**.
 
 Also, both MySQL client development headers as well as MySQL++ headers should be installed.
-These dependencies can be procured from a default repository; e.g. in Ubuntu
+These dependencies can be procured from a default software repository; e.g. in Ubuntu
 
 ```
 sudo apt install libmysqlclient-dev libmysql++-dev
 ```
 
-Also, you will need a modern C++ compiler with support for C++17 standard,
-as well as CMake version 3.5 or later.
+Also, you will need a modern C++ compiler with support for C++17 standard.
 
 ### Unix-family OS
 
