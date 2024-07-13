@@ -38,8 +38,8 @@ running the program as
 ```
 dbdpp source.cfg target.cfg ref_table target_table > out.sql
 ```
-will print into **out.sql** list of SQL statements which should be applied to _db_to_change_
-to make it consistent with _db_reference_.
+will print into **out.sql** list of SQL statements which should be applied to
+_db_to_change.target_table_ to make it consistent with _db_reference.ref_table_.
 
 ## How to compile?
 
