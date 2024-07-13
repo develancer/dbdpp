@@ -1,22 +1,155 @@
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <stdexcept>
 #include <vector>
 
-#define MYSQLPP_MYSQL_HEADERS_BURIED
 #include <mysql++/mysql++.h>
 using mysqlpp::Connection, mysqlpp::Query, mysqlpp::Row, mysqlpp::UseQueryResult;
 
+struct Config {
+	std::string host;
+	std::string user;
+	std::string password;
+	std::string database;
+};
+
+class ConfigParser {
+	std::string path;
+
+	static std::string unescape_string(const std::string& str, char end_of_line) {
+		std::string result;
+		bool escape = false;
+
+		for (char c : str) {
+			if (escape) {
+				switch (c) {
+				case 'b': result += '\b';
+					break;
+				case 't': result += '\t';
+					break;
+				case 'n': result += '\n';
+					break;
+				case 'r': result += '\r';
+					break;
+				case '\\': result += '\\';
+					break;
+				case 's': result += ' ';
+					break;
+				default: if (c != end_of_line) result += '\\';
+					result += c;
+					break;
+				}
+				escape = false;
+			}
+			else if (c == '\\') {
+				escape = true;
+			}
+			else {
+				if (c == end_of_line) {
+					break;
+				}
+				result += c;
+			}
+		}
+
+		if (escape) {
+			result += '\\';
+		}
+
+		return result;
+	}
+
+	static void trim_whitespace(std::string& str) {
+		str.erase(0, str.find_first_not_of(" \t\n\r\f\v"));
+		auto index = str.find_last_not_of(" \t\n\r\f\v");
+		if (index != std::string::npos) {
+			str.erase(index + 1);
+		}
+	}
+
+	std::map<std::string, std::string> parse_config_entries(std::ifstream&& file) const {
+		std::map<std::string, std::string> config;
+		if (!file.is_open()) {
+			throw std::runtime_error("cannot open config file " + path);
+		}
+
+		std::string line;
+		while (std::getline(file, line)) {
+			trim_whitespace(line);
+
+			// Ignore comments and sections
+			if (line.empty() || line[0] == '#' || line[0] == ';' || line[0] == '[') {
+				continue;
+			}
+
+			// Find the position of the equals sign
+			size_t pos = line.find('=');
+			if (pos != std::string::npos) {
+				std::string key = line.substr(0, pos);
+				if (key.find('#') != std::string::npos) {
+					continue; // = sign is a part of comment, not an actual entry
+				}
+				std::string value = line.substr(pos + 1);
+
+				// Trim leading and trailing whitespace from key and value
+				trim_whitespace(key);
+				trim_whitespace(value);
+
+				// Remove quotes from value if present
+				char end_of_line = '#';
+				if (!value.empty() && (value.front() == '\'' || value.front() == '"')) {
+					end_of_line = value.front();
+					value = value.substr(1);
+				}
+				// Unescape the value
+				value = unescape_string(value, end_of_line);
+
+				// Insert the key-value pair into the map
+				config[key] = value;
+			}
+		}
+
+		return config;
+	}
+
+	[[nodiscard]] std::string get_entry(const std::map<std::string, std::string>& entries, const std::string& key) const {
+		auto it = entries.find(key);
+		if (it == entries.end()) {
+			throw std::runtime_error("missing " + key + " in config file " + path);
+		}
+		return it->second;
+	}
+
+public:
+	explicit ConfigParser(std::string path) : path(std::move(path)) { }
+
+	[[nodiscard]] Config parse_config() const {
+		auto entries = parse_config_entries(std::ifstream(path));
+
+		Config config;
+		config.host = get_entry(entries, "host");
+		config.password = get_entry(entries, "password");
+		config.user = get_entry(entries, "user");
+		config.database = entries["database"];
+
+		auto it = entries.find("port");
+		if (it != entries.end()) {
+			config.host += ':' + it->second;
+		}
+
+		return config;
+	}
+};
+
 using PrimaryKey = std::vector<std::string>;
-
-// using outputter_t = void(Query& query, const Row&, const std::vector<std::string>& field_names, int index);
-
 
 struct TableData {
 	const std::string full_table_name;
 	std::map<PrimaryKey, Row> rows;
 
-	explicit TableData(std::string full_table_name) : full_table_name(std::move(full_table_name)) { }
+	explicit TableData(std::string full_table_name) : full_table_name(std::move(full_table_name)) {
+	}
 };
 
 class TableMetadata {
@@ -44,8 +177,9 @@ private:
 		output_value(query, row, index);
 	}
 
-	template<class LIST>
-	bool output_list(Query& query, const Row& row, outputter_t outputter, const char* delimiter, const LIST& indexes) const {
+	template <class LIST>
+	bool output_list(Query& query, const Row& row, outputter_t outputter, const char* delimiter,
+	                 const LIST& indexes) const {
 		bool writing_started = false;
 		for (int index : indexes) {
 			if (writing_started) {
@@ -59,11 +193,12 @@ private:
 
 public:
 	TableMetadata(std::vector<std::string> field_names, std::list<int> primary_key_indexes)
-	: field_count(static_cast<int>(field_names.size())), field_names(std::move(field_names)), primary_key_indexes(std::move(primary_key_indexes)) {
+		: field_count(static_cast<int>(field_names.size())), field_names(std::move(field_names)),
+		  primary_key_indexes(std::move(primary_key_indexes)) {
 		if (this->field_names.size() > std::numeric_limits<int>::max()) {
 			throw std::runtime_error("strangely too many columns in database");
 		}
-		for (int i=0; i<field_count; ++i) {
+		for (int i = 0; i < field_count; ++i) {
 			all_indexes.push_back(i);
 		}
 	}
@@ -72,7 +207,7 @@ public:
 		return field_names != that.field_names || primary_key_indexes != that.primary_key_indexes;
 	}
 
-	template<class LIST>
+	template <class LIST>
 	bool output_equal_list_for_update(Query& query, const Row& row, const LIST& indexes) const {
 		return output_list(query, row, &TableMetadata::output_equal, ",", indexes);
 	}
@@ -129,7 +264,8 @@ TableData fetch_table_data(Connection& conn, const TableMetadata& metadata, cons
 	return table_data;
 }
 
-void compute_table_diff(Connection& conn, const TableMetadata& metadata, const std::string& full_table_name, TableData& table_data) {
+void compute_table_diff(Connection& conn, const TableMetadata& metadata, const std::string& full_table_name,
+                        TableData& table_data) {
 	if (Query query = conn.query("SELECT * FROM " + full_table_name)) {
 		if (UseQueryResult res = query.use()) {
 			std::vector<int> changed_indexes;
@@ -147,10 +283,11 @@ void compute_table_diff(Connection& conn, const TableMetadata& metadata, const s
 					insert_query << ")";
 
 					std::cout << insert_query << ";\n";
-				} else {
+				}
+				else {
 					// it is present, but it may have changed
 					changed_indexes.clear();
-					for (int index=0; index<metadata.field_count; ++index) {
+					for (int index = 0; index < metadata.field_count; ++index) {
 						if (row[index] != it->second[index]) {
 							changed_indexes.push_back(index);
 						}
@@ -180,31 +317,33 @@ void compute_table_diff(Connection& conn, const TableMetadata& metadata, const s
 	}
 }
 
-int main() {
-	const char* server1 = "localhost";
-	const char* user1 = "root";
-	const char* password1 = "qwerty";
-	const std::string table_name_1 = "airport_directory.common_airport_2";
-
-	const char* server2 = "localhost";
-	const char* user2 = "root";
-	const char* password2 = "qwerty";
-	const std::string table_name_2 = "airport_directory.common_airport";
+int main(int argc, char** argv) {
+	if (argc < 4 || argc > 5) {
+		std::cerr << "USAGE: dbdpp source.cfg target.cfg source_table_name [ target_table_name ]\n"
+			<< "\t(source.cfg and target.cfg should be MySQL-style configuration files)" << std::endl;
+		return 1;
+	}
 
 	try {
-		Connection conn1(nullptr, server1, user1, password1);
-		Connection conn2(nullptr, server2, user2, password2);
+		Config source = ConfigParser(argv[1]).parse_config();
+		Config target = ConfigParser(argv[2]).parse_config();
+		const char* source_table_name = argv[3];
+		const char* target_table_name = argv[argc-1];
 
-		TableMetadata metadata = extract_table_metadata(conn1, table_name_1);
-		if (extract_table_metadata(conn2, table_name_2) != metadata) {
+		Connection target_conn(target.database.c_str(), target.host.c_str(), target.user.c_str(), target.password.c_str());
+		Connection source_conn(source.database.c_str(), source.host.c_str(), source.user.c_str(), source.password.c_str());
+
+		TableMetadata metadata = extract_table_metadata(target_conn, target_table_name);
+		if (extract_table_metadata(source_conn, source_table_name) != metadata) {
 			throw std::runtime_error("table definitions differ");
 		}
 
-		TableData data1 = fetch_table_data(conn1, metadata, table_name_1);
-		compute_table_diff(conn2, metadata, table_name_2, data1);
-
-	} catch (const std::exception& e) {
-		std::cerr << "ERROR!" << e.what() << std::endl;
+		TableData data_in_target = fetch_table_data(target_conn, metadata, target_table_name);
+		compute_table_diff(source_conn, metadata, source_table_name, data_in_target);
+	}
+	catch (const std::exception& e) {
+		std::cerr << "ERROR! " << e.what() << std::endl;
+		return 1;
 	}
 
 	return 0;
