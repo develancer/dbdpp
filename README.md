@@ -3,8 +3,8 @@ dbdpp
 
 ## What is dbdpp?
 
-This is a simple program to compute differences between two MySQL databases
-as a list of SQL commands needed to synchronize them.
+This is a simple tool to compute differences between two MySQL database tables
+as a list of SQL commands (INSERT/UPDATE/DELETE) needed to synchronize them.
 It serves as a faster and simpler replacement for [DBDiff](https://github.com/DBDiff/DBDiff).
 
 ## How to use?
