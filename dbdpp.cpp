@@ -227,7 +227,9 @@ public:
 	[[nodiscard]] PrimaryKey extract_keys(const Row& row) const {
 		PrimaryKey keys;
 		for (int index : primary_key_indexes) {
-			keys.emplace_back(row[index]);
+			std::string key;
+			row[index].to_string(key);
+			keys.emplace_back(std::move(key));
 		}
 		return keys;
 	}
