@@ -187,7 +187,7 @@ private:
 	}
 
 	void output_diff(Query& query, const Row& row, int index) const {
-		query << "(NOT s.";
+		query << "(NOT BINARY s.";
 		output_field(query, row, index);
 		query << " <=> t.";
 		output_field(query, row, index);
