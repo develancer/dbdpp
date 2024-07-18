@@ -1,6 +1,8 @@
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <numeric>
 #include <stdexcept>
 #include <vector>
 
@@ -160,6 +162,7 @@ private:
 	std::vector<std::string> field_names;
 	std::list<int> all_indexes;
 	std::list<int> primary_key_indexes;
+	std::list<int> non_primary_key_indexes;
 
 	typedef void (TableMetadata::*outputter_t)(Query& query, const Row&, int index) const;
 
@@ -171,10 +174,24 @@ private:
 		query << mysqlpp::quote << row[index];
 	}
 
+	void output_null_field(Query& query, const Row& row, int index) const {
+		query << "j.";
+		output_field(query, row, index);
+		query << " IS NULL";
+	}
+
 	void output_equal(Query& query, const Row& row, int index) const {
 		output_field(query, row, index);
 		query << '=';
 		output_value(query, row, index);
+	}
+
+	void output_diff(Query& query, const Row& row, int index) const {
+		query << "(NOT s.";
+		output_field(query, row, index);
+		query << " <=> t.";
+		output_field(query, row, index);
+		query << ")";
 	}
 
 	template <class LIST>
@@ -201,6 +218,11 @@ public:
 		for (int i = 0; i < field_count; ++i) {
 			all_indexes.push_back(i);
 		}
+		std::set_difference(
+			all_indexes.begin(), all_indexes.end(),
+			this->primary_key_indexes.begin(), this->primary_key_indexes.end(),
+			std::inserter(non_primary_key_indexes, non_primary_key_indexes.end())
+		);
 	}
 
 	bool operator!=(const TableMetadata& that) const {
@@ -214,6 +236,18 @@ public:
 
 	bool output_equal_list_for_where(Query& query, const Row& row) const {
 		return output_list(query, row, &TableMetadata::output_equal, " AND ", primary_key_indexes);
+	}
+
+	bool output_null_key_list_for_where(Query& query, const Row& row) const {
+		return output_list(query, row, &TableMetadata::output_null_field, " AND ", primary_key_indexes);
+	}
+
+	bool output_diff_list_for_where(Query& query, const Row& row) const {
+		return output_list(query, row, &TableMetadata::output_diff, " OR ", non_primary_key_indexes);
+	}
+
+	bool output_key_list_for_using(Query& query, const Row& row) const {
+		return output_list(query, row, &TableMetadata::output_field, ",", primary_key_indexes);
 	}
 
 	bool output_field_list_for_insert(Query& query, const Row& row) const {
@@ -235,113 +269,216 @@ public:
 	}
 };
 
+template<class VISITOR>
+void process_rows_from_query(Connection& conn, Query& query, VISITOR visitor) {
+	if (UseQueryResult res = query.use()) {
+		while (Row row = res.fetch_row()) {
+			visitor(row);
+		}
+	}
+}
+
+template<class VISITOR>
+void process_rows_from_query(Connection& conn, const std::string& sql, VISITOR visitor) {
+	if (Query query = conn.query(sql)) {
+		process_rows_from_query<VISITOR>(conn, query, visitor);
+	}
+}
+
 TableMetadata extract_table_metadata(Connection& conn, const std::string& full_table_name) {
 	std::vector<std::string> field_names;
 	std::list<int> primary_key_indexes;
-	if (Query query = conn.query("DESCRIBE " + full_table_name)) {
-		if (UseQueryResult res = query.use()) {
-			int index = 0;
-			while (Row row = res.fetch_row()) {
-				field_names.emplace_back(row["Field"]);
-				if (row["Key"] == "PRI") {
-					primary_key_indexes.push_back(index);
-				}
-				++index;
-			}
+	int index = 0;
+	process_rows_from_query(conn, "DESCRIBE " + full_table_name, [&](const Row& row) {
+		field_names.emplace_back(row["Field"]);
+		if (row["Key"] == "PRI") {
+			primary_key_indexes.push_back(index);
 		}
-	}
+		++index;
+	});
 	return {std::move(field_names), std::move(primary_key_indexes)};
 }
 
 TableData fetch_table_data(Connection& conn, const TableMetadata& metadata, const std::string& full_table_name) {
 	TableData table_data(full_table_name);
-	if (Query query = conn.query("SELECT * FROM " + full_table_name)) {
-		if (UseQueryResult res = query.use()) {
-			while (Row row = res.fetch_row()) {
-				PrimaryKey keys = metadata.extract_keys(row);
-				table_data.rows.emplace(std::move(keys), std::move(row));
-			}
-		}
-	}
+	process_rows_from_query(conn, "SELECT * FROM " + full_table_name, [&](Row& row) {
+		PrimaryKey keys = metadata.extract_keys(row);
+		table_data.rows.emplace(std::move(keys), std::move(row));
+	});
 	return table_data;
+}
+
+void print_delete(Connection& conn, const TableMetadata& metadata, const Row& row, const std::string& target_table_name) {
+	Query delete_query = conn.query();
+	delete_query << "DELETE FROM " + target_table_name + " WHERE ";
+	if (!metadata.output_equal_list_for_where(delete_query, row)) {
+		return;
+	}
+
+	std::cout << delete_query << ";\n";
+}
+
+void print_insert(Connection& conn, const TableMetadata& metadata, const Row& row, const std::string& target_table_name) {
+	Query insert_query = conn.query();
+	insert_query << "INSERT INTO " + target_table_name + " (";
+	if (!metadata.output_field_list_for_insert(insert_query, row)) {
+		return;
+	}
+	insert_query << ") VALUES (";
+	if (!metadata.output_value_list_for_insert(insert_query, row)) {
+		return;
+	}
+	insert_query << ")";
+
+	std::cout << insert_query << ";\n";
+}
+
+void print_update(Connection& conn, const TableMetadata& metadata, const Row& row, const std::string& target_table_name, const std::vector<int>& changed_indexes) {
+	Query update_query = conn.query();
+	update_query << "UPDATE " + target_table_name + " SET ";
+	if (!metadata.output_equal_list_for_update(update_query, row, changed_indexes)) {
+		return;
+	}
+	update_query << " WHERE ";
+	if (!metadata.output_equal_list_for_where(update_query, row)) {
+		return;
+	}
+
+	std::cout << update_query << ";\n";
 }
 
 void compute_table_diff(Connection& conn, const TableMetadata& metadata, const std::string& full_table_name,
                         TableData& table_data) {
-	if (Query query = conn.query("SELECT * FROM " + full_table_name)) {
-		if (UseQueryResult res = query.use()) {
-			std::vector<int> changed_indexes;
-			while (Row row = res.fetch_row()) {
-				PrimaryKey keys = metadata.extract_keys(row);
+	std::vector<int> changed_indexes;
+	process_rows_from_query(conn, "SELECT * FROM " + full_table_name, [&](const Row& row) {
+		PrimaryKey keys = metadata.extract_keys(row);
 
-				auto it = table_data.rows.find(keys);
-				if (it == table_data.rows.end()) {
-					// if the row is not present in table_data, it should be INSERTed
-					Query insert_query = conn.query();
-					insert_query << "INSERT INTO " + table_data.full_table_name + " (";
-					metadata.output_field_list_for_insert(insert_query, row);
-					insert_query << ") VALUES (";
-					metadata.output_value_list_for_insert(insert_query, row);
-					insert_query << ")";
-
-					std::cout << insert_query << ";\n";
-				}
-				else {
-					// it is present, but it may have changed
-					changed_indexes.clear();
-					for (int index = 0; index < metadata.field_count; ++index) {
-						if (row[index] != it->second[index]) {
-							changed_indexes.push_back(index);
-						}
-					}
-					if (!changed_indexes.empty()) {
-						Query update_query = conn.query();
-						update_query << "UPDATE " + table_data.full_table_name + " SET ";
-						metadata.output_equal_list_for_update(update_query, row, changed_indexes);
-						update_query << " WHERE ";
-						metadata.output_equal_list_for_where(update_query, row);
-
-						std::cout << update_query << ";\n";
-					}
-					table_data.rows.erase(it);
+		auto it = table_data.rows.find(keys);
+		if (it == table_data.rows.end()) {
+			// if the row is not present in table_data, it should be INSERTed
+			print_insert(conn, metadata, row, table_data.full_table_name);
+		}
+		else {
+			// it is present, but it may have changed
+			changed_indexes.clear();
+			for (int index = 0; index < metadata.field_count; ++index) {
+				if (row[index] != it->second[index]) {
+					changed_indexes.push_back(index);
 				}
 			}
+			if (!changed_indexes.empty()) {
+				print_update(conn, metadata, row, table_data.full_table_name, changed_indexes);
+			}
+			table_data.rows.erase(it);
 		}
-	}
+	});
 
 	// afterwards, all rows that are left in table_data are the ones that should be DELETEd
 	for (const auto& old : table_data.rows) {
-		Query delete_query = conn.query();
-		delete_query << "DELETE FROM " + table_data.full_table_name + " WHERE ";
-		metadata.output_equal_list_for_where(delete_query, old.second);
-
-		std::cout << delete_query << ";\n";
+		print_delete(conn, metadata, old.second, table_data.full_table_name);
 	}
+}
+
+void compute_changed_rows_on_db(Connection& conn, const TableMetadata& metadata, const std::string& source_table_name, const std::string& target_table_name) {
+	Query select_query = conn.query();
+	select_query << "SELECT s.*, t.* FROM " + source_table_name + " s JOIN " + target_table_name + " t USING (";
+	if (!metadata.output_key_list_for_using(select_query, {})) {
+		return;
+	}
+	select_query << ") WHERE ";
+	if (!metadata.output_diff_list_for_where(select_query, {})) {
+		return;
+	}
+
+	std::vector<int> changed_indexes;
+	process_rows_from_query(conn, select_query, [&](const Row& row) {
+		// the rows present in both database, but with different values
+		changed_indexes.clear();
+		for (int index = 0; index < metadata.field_count; ++index) {
+			if (row[index] != row[index + metadata.field_count]) {
+				changed_indexes.push_back(index);
+			}
+		}
+		if (!changed_indexes.empty()) {
+			print_update(conn, metadata, row, target_table_name, changed_indexes);
+		}
+	});
+}
+
+void compute_new_rows_on_db(Connection& conn, const TableMetadata& metadata, const std::string& source_table_name, const std::string& target_table_name) {
+	Query select_query = conn.query();
+	select_query << "SELECT s.* FROM " + source_table_name + " s LEFT JOIN " + target_table_name + " j USING (";
+	if (!metadata.output_key_list_for_using(select_query, {})) {
+		return;
+	}
+	select_query << ") WHERE ";
+	if (!metadata.output_null_key_list_for_where(select_query, {})) {
+		return;
+	}
+
+	process_rows_from_query(conn, select_query, [&](const Row& row) {
+		// rows in source that are not yet in target database
+		print_insert(conn, metadata, row, target_table_name);
+	});
+}
+
+void compute_old_rows_on_db(Connection& conn, const TableMetadata& metadata, const std::string& source_table_name, const std::string& target_table_name) {
+	Query select_query = conn.query();
+	select_query << "SELECT t.* FROM " + target_table_name + " t LEFT JOIN " + source_table_name + " j USING (";
+	if (!metadata.output_key_list_for_using(select_query, {})) {
+		return;
+	}
+	select_query << ") WHERE ";
+	if (!metadata.output_null_key_list_for_where(select_query, {})) {
+		return;
+	}
+
+	process_rows_from_query(conn, select_query, [&](const Row& row) {
+		// rows in target that are not in source database anymore
+		print_delete(conn, metadata, row, target_table_name);
+	});
+}
+
+void compute_table_diff_on_db(Connection& conn, const TableMetadata& metadata, const std::string& source_table_name, const std::string& target_table_name) {
+	compute_changed_rows_on_db(conn, metadata, source_table_name, target_table_name);
+	compute_new_rows_on_db(conn, metadata, source_table_name, target_table_name);
+	compute_old_rows_on_db(conn, metadata, source_table_name, target_table_name);
 }
 
 int main(int argc, char** argv) {
 	if (argc < 4 || argc > 5) {
-		std::cerr << "USAGE: dbdpp source.cfg target.cfg source_table_name [ target_table_name ]\n"
+		std::cerr << "USAGE: dbdpp [ source.cfg ] target.cfg source_table_name target_table_name\n"
 			<< "\t(source.cfg and target.cfg should be MySQL-style configuration files)" << std::endl;
 		return 1;
 	}
 
 	try {
 		Config source = ConfigParser(argv[1]).parse_config();
-		Config target = ConfigParser(argv[2]).parse_config();
-		const char* source_table_name = argv[3];
+		Config target = ConfigParser(argv[argc-3]).parse_config();
+		const char* source_table_name = argv[argc-2];
 		const char* target_table_name = argv[argc-1];
 
-		Connection target_conn(target.database.c_str(), target.host.c_str(), target.user.c_str(), target.password.c_str());
-		Connection source_conn(source.database.c_str(), source.host.c_str(), source.user.c_str(), source.password.c_str());
+		std::shared_ptr<Connection> source_conn, target_conn;
+		target_conn = std::make_shared<Connection>(target.database.c_str(), target.host.c_str(), target.user.c_str(), target.password.c_str());
+		if (argc == 5) {
+			source_conn = std::make_shared<Connection>(source.database.c_str(), source.host.c_str(), source.user.c_str(), source.password.c_str());
+		} else {
+			source_conn = target_conn;
+		}
 
-		TableMetadata metadata = extract_table_metadata(target_conn, target_table_name);
-		if (extract_table_metadata(source_conn, source_table_name) != metadata) {
+		TableMetadata metadata = extract_table_metadata(*target_conn, target_table_name);
+		if (extract_table_metadata(*source_conn, source_table_name) != metadata) {
 			throw std::runtime_error("table definitions differ");
 		}
 
-		TableData data_in_target = fetch_table_data(target_conn, metadata, target_table_name);
-		compute_table_diff(source_conn, metadata, source_table_name, data_in_target);
+		if (argc == 5) {
+			TableData data_in_target = fetch_table_data(*target_conn, metadata, target_table_name);
+			compute_table_diff(*source_conn, metadata, source_table_name, data_in_target);
+
+		} else {
+			compute_table_diff_on_db(*target_conn, metadata, source_table_name, target_table_name);
+
+		}
 	}
 	catch (const std::exception& e) {
 		std::cerr << "ERROR! " << e.what() << std::endl;
