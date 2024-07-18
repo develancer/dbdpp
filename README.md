@@ -40,6 +40,8 @@ dbdpp source.cnf target.cnf ref_table target_table > out.sql
 ```
 will print into **out.sql** list of SQL statements which should be applied to
 _db_to_change.target_table_ to make it consistent with _db_reference.ref_table_.
+Only INSERT/UPDATE/DELETE statements are generated; there will be no ALTERs,
+as _dbdpp_ only work for tables with matching structure (the same set of fields and primary keys).
 
 There are two modes of operation:
 * if both **source.cnf** and **target.cnf** are given (even if they are the same),
@@ -48,6 +50,11 @@ There are two modes of operation:
   and only the differences will be fetched to your local machine.
 
 Choose the option that is better for your particular case performance-wise.
+
+The database names can be entered in the ***.cnf** files, _and/or_ you may include them in command line arguments
+as `my_db_name.my_table_name`. These names will neither be escaped nor quoted, so whatever you pass as a table name
+will be used as-is both in _performed_ and in _generated_ SQL queries. Therefore, if you do not specify the database
+name as a prefix for the table name, none will be added to generated INSERT/UPDATE/DELETE queries.
 
 ## How to compile?
 
