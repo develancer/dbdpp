@@ -11,13 +11,13 @@ It serves as a faster and simpler replacement for [DBDiff](https://github.com/DB
 
 Running the program with no arguments will print its syntax:
 ```
-USAGE: dbdpp [ source.cfg ] target.cfg source_table_name target_table_name
-	(source.cfg and target.cfg should be MySQL-style configuration files)
+USAGE: dbdpp [ source.cnf ] target.cnf source_table_name target_table_name
+	(source.cnf and target.cnf should be MySQL-style configuration files)
 ```
 
 ### Example
 
-For example, if **source.cfg** is
+For example, if **source.cnf** is
 ```
 [client]
 host=source-database.example.com
@@ -25,7 +25,7 @@ user=abc
 password=def
 database=db_reference
 ```
-and **target.cfg** is
+and **target.cnf** is
 ```
 [client]
 host=target-database.example.com
@@ -36,15 +36,15 @@ database=db_to_change
 ```
 running the program as
 ```
-dbdpp source.cfg target.cfg ref_table target_table > out.sql
+dbdpp source.cnf target.cnf ref_table target_table > out.sql
 ```
 will print into **out.sql** list of SQL statements which should be applied to
 _db_to_change.target_table_ to make it consistent with _db_reference.ref_table_.
 
 There are two modes of operation:
-* if both **source.cfg** and **target.cfg** are given (even if they are the same),
+* if both **source.cnf** and **target.cnf** are given (even if they are the same),
   the tool will fetch all data from both tables and perform comparisons on your local machine;
-* if only **target.cfg** is given, processing will be performed on SQL-level on the database server,
+* if only **target.cnf** is given, processing will be performed on SQL-level on the database server,
   and only the differences will be fetched to your local machine.
 
 Choose the option that is better for your particular case performance-wise.

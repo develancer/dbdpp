@@ -447,8 +447,8 @@ void compute_table_diff_on_db(Connection& conn, const TableMetadata& metadata, c
 
 int main(int argc, char** argv) {
 	if (argc < 4 || argc > 5) {
-		std::cerr << "USAGE: dbdpp [ source.cfg ] target.cfg source_table_name target_table_name\n"
-			<< "\t(source.cfg and target.cfg should be MySQL-style configuration files)" << std::endl;
+		std::cerr << "USAGE: dbdpp [ source.cnf ] target.cnf source_table_name target_table_name\n"
+			<< "\t(source.cnf and target.cnf should be MySQL-style configuration files)" << std::endl;
 		return 1;
 	}
 
