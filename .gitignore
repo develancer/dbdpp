@@ -1,0 +1,6 @@
+*
+!/.gitignore
+!/dbdpp.cpp
+!/CMakeLists.txt
+!/LICENCE
+!/README.md
