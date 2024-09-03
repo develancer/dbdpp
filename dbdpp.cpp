@@ -7,7 +7,7 @@
 #include <vector>
 
 #include <mysql++/mysql++.h>
-using mysqlpp::Connection, mysqlpp::Query, mysqlpp::Row, mysqlpp::UseQueryResult;
+using mysqlpp::Connection, mysqlpp::Query, mysqlpp::Row, mysqlpp::String, mysqlpp::UseQueryResult;
 
 struct Config {
 	std::string host;
@@ -171,7 +171,11 @@ private:
 	}
 
 	void output_value(Query& query, const Row& row, int index) const {
-		query << mysqlpp::quote << row[index];
+		if (row[index].is_null()) {
+			query << "NULL";
+		} else {
+			query << mysqlpp::quote << row[index];
+		}
 	}
 
 	void output_null_field(Query& query, const Row& row, int index) const {
@@ -347,6 +351,10 @@ void print_update(Connection& conn, const TableMetadata& metadata, const Row& ro
 	std::cout << update_query << ";\n";
 }
 
+bool equals(const String& x, const String& y) {
+	return x.is_null() == y.is_null() && x == y;
+}
+
 void compute_table_diff(Connection& conn, const TableMetadata& metadata, const std::string& full_table_name,
                         TableData& table_data) {
 	std::vector<int> changed_indexes;
@@ -362,7 +370,7 @@ void compute_table_diff(Connection& conn, const TableMetadata& metadata, const s
 			// it is present, but it may have changed
 			changed_indexes.clear();
 			for (int index = 0; index < metadata.field_count; ++index) {
-				if (row[index] != it->second[index]) {
+				if (!equals(row[index], it->second[index])) {
 					changed_indexes.push_back(index);
 				}
 			}
@@ -395,7 +403,7 @@ void compute_changed_rows_on_db(Connection& conn, const TableMetadata& metadata,
 		// the rows present in both database, but with different values
 		changed_indexes.clear();
 		for (int index = 0; index < metadata.field_count; ++index) {
-			if (row[index] != row[index + metadata.field_count]) {
+			if (!equals(row[index], row[index + metadata.field_count])) {
 				changed_indexes.push_back(index);
 			}
 		}
